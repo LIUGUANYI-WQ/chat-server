@@ -7,6 +7,8 @@
 #include <queue>
 #include <memory>
 #include <string>
+#include <vector>
+#include <cstdint>
 
 class RedisManager {
 public:
@@ -18,6 +20,18 @@ public:
     bool del(const std::string& key);
     std::string generateToken(const std::string& username);
     bool validateToken(const std::string& token, std::string& username);
+
+    // 新增：集合操作
+    bool sadd(const std::string& key, const std::string& value);
+    bool srem(const std::string& key, const std::string& value);
+    bool sismember(const std::string& key, const std::string& value);
+    std::vector<std::string> smembers(const std::string& key);
+
+    // 新增：列表操作
+    bool lpush(const std::string& key, const std::string& value);
+    bool ltrim(const std::string& key, int start, int stop);
+    std::vector<std::string> lrange(const std::string& key, int start, int stop);
+
     void shutdown();
 
 private:

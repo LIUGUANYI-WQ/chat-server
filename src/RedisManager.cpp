@@ -190,6 +190,150 @@ bool RedisManager::validateToken(const std::string& token, std::string& username
     return false;
 }
 
+// 新增：集合操作
+bool RedisManager::sadd(const std::string& key, const std::string& value) {
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "SADD %s %s", key.c_str(), value.c_str());
+    if (!reply) {
+        releaseConnection(conn);
+        return false;
+    }
+
+    bool success = reply->type != REDIS_REPLY_ERROR;
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return success;
+}
+
+bool RedisManager::srem(const std::string& key, const std::string& value) {
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "SREM %s %s", key.c_str(), value.c_str());
+    if (!reply) {
+        releaseConnection(conn);
+        return false;
+    }
+
+    bool success = reply->type != REDIS_REPLY_ERROR;
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return success;
+}
+
+bool RedisManager::sismember(const std::string& key, const std::string& value) {
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "SISMEMBER %s %s", key.c_str(), value.c_str());
+    if (!reply) {
+        releaseConnection(conn);
+        return false;
+    }
+
+    bool result = reply->type == REDIS_REPLY_INTEGER && reply->integer == 1;
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return result;
+}
+
+std::vector<std::string> RedisManager::smembers(const std::string& key) {
+    std::vector<std::string> result;
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return result;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "SMEMBERS %s", key.c_str());
+    if (!reply) {
+        releaseConnection(conn);
+        return result;
+    }
+
+    if (reply->type == REDIS_REPLY_ARRAY) {
+        for (size_t i = 0; i < reply->elements; ++i) {
+            if (reply->element[i]->type == REDIS_REPLY_STRING) {
+                result.emplace_back(reply->element[i]->str, reply->element[i]->len);
+            }
+        }
+    }
+
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return result;
+}
+
+// 新增：列表操作
+bool RedisManager::lpush(const std::string& key, const std::string& value) {
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "LPUSH %s %s", key.c_str(), value.c_str());
+    if (!reply) {
+        releaseConnection(conn);
+        return false;
+    }
+
+    bool success = reply->type != REDIS_REPLY_ERROR;
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return success;
+}
+
+bool RedisManager::ltrim(const std::string& key, int start, int stop) {
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return false;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "LTRIM %s %d %d", key.c_str(), start, stop);
+    if (!reply) {
+        releaseConnection(conn);
+        return false;
+    }
+
+    bool success = reply->type != REDIS_REPLY_ERROR;
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return success;
+}
+
+std::vector<std::string> RedisManager::lrange(const std::string& key, int start, int stop) {
+    std::vector<std::string> result;
+    redisContext* conn = getConnection();
+    if (!conn) {
+        return result;
+    }
+
+    redisReply* reply = (redisReply*)redisCommand(conn, "LRANGE %s %d %d", key.c_str(), start, stop);
+    if (!reply) {
+        releaseConnection(conn);
+        return result;
+    }
+
+    if (reply->type == REDIS_REPLY_ARRAY) {
+        for (size_t i = 0; i < reply->elements; ++i) {
+            if (reply->element[i]->type == REDIS_REPLY_STRING) {
+                result.emplace_back(reply->element[i]->str, reply->element[i]->len);
+            }
+        }
+    }
+
+    freeReplyObject(reply);
+    releaseConnection(conn);
+    return result;
+}
+
 void RedisManager::shutdown() {
     if (!running_) {
         return;
