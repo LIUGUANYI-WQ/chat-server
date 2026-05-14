@@ -1,0 +1,55 @@
+# Build outputs
+build/
+*.o
+*.obj
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.user
+
+# Compiled binaries
+server
+client
+benchmark
+http_server
+wrk/
+
+# Log files
+*.log
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Testing
+*.gcda
+*.gcno
+*.gcov
+*.prof
+
+# MySQL backups
+*.sql.bak
+
+# Core dumps
+core
+core.*
