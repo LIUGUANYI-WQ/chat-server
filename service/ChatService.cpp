@@ -3,11 +3,8 @@
 
 namespace service {
 
-ChatService::ChatService(store::IChatStore* chatStore, store::IUserStore* userStore)
-    : chatStore_(chatStore)
-    , userStore_(userStore)
-    , nextMessageId_(1) {
-}
+ChatService::ChatService(store::IChatStore* chatStore, store::IUserStore* userStore, muduo::net::EventLoop* loop)
+    : chatStore_(chatStore), userStore_(userStore), loop_(loop), nextMessageId_(1) {}
 
 void ChatService::userOnline(uint64_t uid) {
     chatStore_->setOnline(uid);
@@ -17,7 +14,6 @@ void ChatService::userOnline(uint64_t uid) {
 void ChatService::userOffline(uint64_t uid) {
     chatStore_->setOffline(uid);
 
-    // 从所有房间中移除该用户
     muduo::MutexLockGuard lock(mutex_);
     for (auto& pair : roomMembers_) {
         pair.second.erase(uid);
@@ -47,7 +43,6 @@ bool ChatService::leaveRoom(uint64_t uid, const std::string& roomId) {
 }
 
 bool ChatService::sendChatMessage(uint64_t senderUid, const std::string& roomId, const std::string& content) {
-    // 创建消息并缓存
     store::ChatMsg msg;
     msg.id = nextMessageId_++;
     msg.room_id = roomId;
@@ -56,7 +51,12 @@ bool ChatService::sendChatMessage(uint64_t senderUid, const std::string& roomId,
     msg.created_at = std::chrono::system_clock::now();
     chatStore_->cacheMessage(roomId, msg);
 
-    // 转发给房间内所有在线用户
+    DBExecutor::instance().asyncSaveChatMessage(msg, loop_, [](bool success, const std::string&) {
+        if (!success) {
+            LOG_ERROR << "Failed to save chat message to MySQL";
+        }
+    });
+
     std::unordered_set<uint64_t> members;
     {
         muduo::MutexLockGuard lock(mutex_);
@@ -100,4 +100,4 @@ void ChatService::setMessageCallback(MessageCallback callback) {
     messageCallback_ = std::move(callback);
 }
 
-} // namespace service
+}
