@@ -16,6 +16,8 @@ enum class MessageType {
     CHAT,
     JOIN_ROOM,
     LEAVE_ROOM,
+    PRIVATE_CHAT,
+    ADD_FRIEND,
     SYSTEM,
     ERROR,
     HEARTBEAT
@@ -80,6 +82,18 @@ struct SystemBody : public MessageBody {
 struct ErrorBody : public MessageBody {
     int code;
     std::string message;
+};
+
+// 私聊消息
+struct PrivateChatBody : public MessageBody {
+    uint64_t to_uid;
+    std::string content;
+    std::optional<uint64_t> sender_uid;
+};
+
+// 添加好友消息
+struct AddFriendBody : public MessageBody {
+    uint64_t friend_uid;
 };
 
 // 心跳消息

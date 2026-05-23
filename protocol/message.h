@@ -35,8 +35,11 @@ Message createChat(uint64_t seq, const std::string& room_id, const std::string& 
                     const std::string& token = "", std::optional<uint64_t> sender_uid = std::nullopt);
 Message createJoinRoom(uint64_t seq, const std::string& room_id, const std::string& token = "");
 Message createLeaveRoom(uint64_t seq, const std::string& room_id, const std::string& token = "");
-Message createSystem(uint64_t seq, int code, const std::string& message);       
-Message createError(uint64_t seq, int code, const std::string& message);        
+Message createPrivateChat(uint64_t seq, uint64_t to_uid, const std::string& content,
+                           const std::string& token = "", std::optional<uint64_t> sender_uid = std::nullopt);
+Message createAddFriend(uint64_t seq, uint64_t friend_uid, const std::string& token = "");
+Message createSystem(uint64_t seq, int code, const std::string& message);
+Message createError(uint64_t seq, int code, const std::string& message);
 Message createHeartbeat(uint64_t seq, const std::string& token = "");
 
 // 获取当前时间戳（毫秒）

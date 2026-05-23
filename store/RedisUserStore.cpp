@@ -1,4 +1,4 @@
-#include "store/RedisUserStore.h"
+#include "RedisUserStore.h"
 #include "RedisManager.h"
 #include <muduo/base/Logging.h>
 #include <cstdint>

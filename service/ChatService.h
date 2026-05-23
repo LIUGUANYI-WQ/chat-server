@@ -1,20 +1,19 @@
 #ifndef SERVICE_CHATSERVICE_H
 #define SERVICE_CHATSERVICE_H
 
-#include ../store/IChatStore.h
-#include ../store/IUserStore.h
-#include ../include/DBExecutor.h
+#include "../store/IChatStore.h"
+#include "../store/IUserStore.h"
+#include "../include/DBExecutor.h"
 #include <string>
 #include <cstdint>
-#include <functional>
-#include <memory>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
+#include <chrono>
 #include <muduo/base/Mutex.h>
+#include <muduo/net/EventLoop.h>
 
 namespace service {
-
-using MessageCallback = std::function<void(uint64_t uid, const std::string& roomId, const std::string& content)>;
 
 class ChatService {
 public:
@@ -27,13 +26,17 @@ public:
     bool joinRoom(uint64_t uid, const std::string& roomId);
     bool leaveRoom(uint64_t uid, const std::string& roomId);
 
-    bool sendChatMessage(uint64_t senderUid, const std::string& roomId, const std::string& content);
+    // 发送群聊消息，返回房间内所有成员 uid 列表供网络层广播
+    std::vector<uint64_t> sendChatMessage(uint64_t senderUid, const std::string& roomId, const std::string& content);
+
+    // 发送私聊消息，返回目标 uid（0 表示对方不在线）
+    uint64_t sendPrivateMessage(uint64_t fromUid, uint64_t toUid, const std::string& content);
+
+    bool addFriend(uint64_t uid, uint64_t friendUid);
 
     std::vector<uint64_t> getOnlineUsersInRoom(const std::string& roomId);
 
     std::vector<store::ChatMsg> getRecentMessages(const std::string& roomId, int count);
-
-    void setMessageCallback(MessageCallback callback);
 
 private:
     store::IChatStore* chatStore_;
@@ -42,7 +45,6 @@ private:
 
     muduo::MutexLock mutex_;
     std::unordered_map<std::string, std::unordered_set<uint64_t>> roomMembers_;
-    MessageCallback messageCallback_;
 
     uint64_t nextMessageId_;
 };

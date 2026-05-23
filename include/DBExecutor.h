@@ -1,13 +1,10 @@
-#ifndef DB_EXECUTOR_H
-#define DB_EXECUTOR_H
+#ifndef INCLUDE_DBEXECUTOR_H
+#define INCLUDE_DBEXECUTOR_H
 
-#include "MySQLConnectionPool.h"
-#include "RedisManager.h"
+#include "../store/types.h"
 #include <muduo/net/EventLoop.h>
 #include <muduo/base/ThreadPool.h>
-#include <muduo/base/Logging.h>
 #include <functional>
-#include <memory>
 #include <string>
 
 class DBExecutor {
@@ -28,21 +25,27 @@ public:
                     const ResultCallback& callback);
 
     void asyncLoginWithToken(const std::string& username, const std::string& password,
-                             muduo::net::EventLoop* callerLoop,
-                             const ResultCallback& callback);
+                              muduo::net::EventLoop* callerLoop,
+                              const ResultCallback& callback);
+
+    void asyncSaveChatMessage(const store::ChatMsg& msg,
+                              muduo::net::EventLoop* callerLoop,
+                              const ResultCallback& callback);
+
+    void asyncAddFriend(uint64_t uid, uint64_t friendUid,
+                        muduo::net::EventLoop* callerLoop,
+                        const ResultCallback& callback);
 
 private:
     DBExecutor();
     ~DBExecutor();
 
-    DBExecutor(const DBExecutor&) = delete;
-    DBExecutor& operator=(const DBExecutor&) = delete;
-
     bool doRegister(const std::string& username, const std::string& password);
     bool doLogin(const std::string& username, const std::string& password);
+    bool doSaveChatMessage(const store::ChatMsg& msg);
 
     muduo::ThreadPool threadPool_;
     bool running_;
 };
 
-#endif // DB_EXECUTOR_H
+#endif // INCLUDE_DBEXECUTOR_H

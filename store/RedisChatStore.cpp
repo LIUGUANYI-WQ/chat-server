@@ -1,6 +1,6 @@
-#include "store/RedisChatStore.h"
+#include "RedisChatStore.h"
 #include "RedisManager.h"
-#include "protocol/json.hpp"
+#include "json.hpp"
 #include <muduo/base/Logging.h>
 #include <cstdint>
 #include <sstream>

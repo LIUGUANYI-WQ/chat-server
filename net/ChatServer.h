@@ -3,6 +3,7 @@
 
 #include "../service/AuthService.h"
 #include "../service/ChatService.h"
+#include "../store/IUserStore.h"
 #include "../protocol/message.h"
 #include <muduo/net/TcpServer.h>
 #include <muduo/net/EventLoop.h>
@@ -16,7 +17,8 @@ namespace net {
 class ChatServer {
 public:
     ChatServer(muduo::net::EventLoop* loop, const muduo::net::InetAddress& listenAddr,
-               service::AuthService* authService, service::ChatService* chatService);
+               service::AuthService* authService, service::ChatService* chatService,
+               store::IUserStore* userStore);
 
     void start();
 
@@ -29,15 +31,23 @@ private:
     void handleChat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
     void handleJoinRoom(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
     void handleLeaveRoom(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
+    void handlePrivateChat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
+    void handleAddFriend(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
     void handleHeartbeat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
 
     void sendMessage(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
     void sendError(const muduo::net::TcpConnectionPtr& conn, const std::string& errorMsg);
+    void sendError(const muduo::net::TcpConnectionPtr& conn, uint64_t seq, int code, const std::string& errorMsg);
+
+    uint64_t authenticate(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg);
+    void broadcastToRoom(uint64_t senderUid, const std::string& roomId,
+                         const std::vector<uint64_t>& members, const std::string& content);
 
     muduo::net::TcpServer server_;
     muduo::net::EventLoop* loop_;
     service::AuthService* authService_;
     service::ChatService* chatService_;
+    store::IUserStore* userStore_;
 
     muduo::MutexLock mutex_;
     std::unordered_map<uint64_t, muduo::net::TcpConnectionPtr> connections_;

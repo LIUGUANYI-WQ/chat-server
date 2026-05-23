@@ -1,32 +1,28 @@
 #include "ChatServer.h"
+#include "../protocol/message.h"
 #include <muduo/base/Logging.h>
+#include <muduo/net/Buffer.h>
+#include <arpa/inet.h>
+#include <cstring>
 
 namespace net {
 
 ChatServer::ChatServer(muduo::net::EventLoop* loop, const muduo::net::InetAddress& listenAddr,
-                       service::AuthService* authService, service::ChatService* chatService)
-    : server_(loop, listenAddr, "ChatServer"), loop_(loop), authService_(authService),
-      chatService_(chatService), nextUid_(1) {
-    server_.setConnectionCallback(std::bind(&ChatServer::onConnection, this, std::placeholders::_1));
-    server_.setMessageCallback(std::bind(&ChatServer::onMessage, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
+                       service::AuthService* authService, service::ChatService* chatService,
+                       store::IUserStore* userStore)
+    : server_(loop, listenAddr, "ChatServer"),
+      loop_(loop),
+      authService_(authService),
+      chatService_(chatService),
+      userStore_(userStore),
+      nextUid_(1) {
 
-    chatService_->setMessageCallback([this](uint64_t uid, const std::string& roomId, const std::string& content) {
-        muduo::net::TcpConnectionPtr conn;
-        {
-            muduo::MutexLockGuard lock(mutex_);
-            auto it = connections_.find(uid);
-            if (it != connections_.end()) {
-                conn = it->second;
-            }
-        }
+    server_.setConnectionCallback([this](const muduo::net::TcpConnectionPtr& conn) {
+        this->onConnection(conn);
+    });
 
-        if (conn && conn->connected()) {
-            protocol::Message msg;
-            msg.header.type = protocol::MessageType::CHAT;
-            msg.body["room_id"] = roomId;
-            msg.body["content"] = content;
-            sendMessage(conn, msg);
-        }
+    server_.setMessageCallback([this](const muduo::net::TcpConnectionPtr& conn, muduo::net::Buffer* buf, muduo::Timestamp time) {
+        this->onMessage(conn, buf, time);
     });
 }
 
@@ -34,11 +30,18 @@ void ChatServer::start() {
     server_.start();
 }
 
-void ChatServer::onConnection(const muduo::net::TcpConnectionPtr& conn) {
+void ChatServer::onConnection(const muduo::net::TcpConnectionPtr& conn) {       
     if (conn->connected()) {
-        LOG_INFO << "New connection: " << conn->peerAddress().toIpPort();
+        LOG_INFO << "Client connected: " << conn->peerAddress().toIpPort();     
+
+        uint64_t uid = nextUid_++;
+        {
+            muduo::MutexLockGuard lock(mutex_);
+            connections_[uid] = conn;
+            connToUid_[conn.get()] = uid;
+        }
     } else {
-        LOG_INFO << "Connection closed: " << conn->peerAddress().toIpPort();
+        LOG_INFO << "Client disconnected: " << conn->peerAddress().toIpPort();  
 
         uint64_t uid = 0;
         {
@@ -51,36 +54,29 @@ void ChatServer::onConnection(const muduo::net::TcpConnectionPtr& conn) {
             }
         }
 
-        if (uid > 0) {
+        if (uid > 0 && chatService_) {
             chatService_->userOffline(uid);
         }
     }
 }
 
 void ChatServer::onMessage(const muduo::net::TcpConnectionPtr& conn, muduo::net::Buffer* buf, muduo::Timestamp time) {
+    // 长度头拆包：4字节大端长度 + payload，循环读出所有完整消息
     while (buf->readableBytes() >= 4) {
-        const void* data = buf->peek();
-        uint32_t len = muduo::net::sockets::networkToHost32(*static_cast<const uint32_t*>(data));
+        uint32_t len;
+        memcpy(&len, buf->peek(), 4);
+        len = ntohl(len);
+        if (buf->readableBytes() < 4 + len) break;  // 消息还没到齐，等下次
+        buf->retrieve(4);
+        std::string msgStr = buf->retrieveAsString(len);
 
-        if (len > 65536) {
-            LOG_ERROR << "Message too long: " << len;
-            conn->shutdown();
-            return;
-        }
-
-        if (buf->readableBytes() < len + 4) {
-            break;
-        }
-
-        std::string msgStr(buf->peek() + 4, len);
-        buf->retrieve(len + 4);
-
-        protocol::Message msg;
-        if (!protocol::decode(msgStr, msg)) {
-            LOG_ERROR << "Failed to decode message";
+        auto optMsg = protocol::decode(msgStr);
+        if (!optMsg) {
             sendError(conn, "Invalid message format");
             continue;
         }
+
+        protocol::Message& msg = *optMsg;
 
         switch (msg.header.type) {
             case protocol::MessageType::REGISTER:
@@ -98,11 +94,16 @@ void ChatServer::onMessage(const muduo::net::TcpConnectionPtr& conn, muduo::net:
             case protocol::MessageType::LEAVE_ROOM:
                 handleLeaveRoom(conn, msg);
                 break;
+            case protocol::MessageType::PRIVATE_CHAT:
+                handlePrivateChat(conn, msg);
+                break;
+            case protocol::MessageType::ADD_FRIEND:
+                handleAddFriend(conn, msg);
+                break;
             case protocol::MessageType::HEARTBEAT:
                 handleHeartbeat(conn, msg);
                 break;
             default:
-                LOG_WARN << "Unknown message type: " << static_cast<int>(msg.header.type);
                 sendError(conn, "Unknown message type");
                 break;
         }
@@ -110,136 +111,249 @@ void ChatServer::onMessage(const muduo::net::TcpConnectionPtr& conn, muduo::net:
 }
 
 void ChatServer::handleRegister(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    std::string username = msg.body["username"].get<std::string>();
-    std::string password = msg.body["password"].get<std::string>();
+    auto* body = static_cast<protocol::RegisterBody*>(msg.body.get());
+    std::string username = body->username;
+    std::string password = body->password;
+    uint64_t seq = msg.header.seq;
 
-    authService_->asyncRegister(username, password, loop_, [this, conn, msg](bool success, const std::string& message) {
-        protocol::Message reply;
-        reply.header.type = protocol::MessageType::SYSTEM;
-        reply.body["success"] = success;
-        reply.body["message"] = message;
-        sendMessage(conn, reply);
-    });
+    service::RegisterResult result = authService_->registerUser(username, password);
+
+    if (result.success) {
+        sendMessage(conn, protocol::createSystem(seq, 0, "Registration successful"));
+    } else {
+        sendError(conn, seq, result.code, result.message);
+    }
 }
 
 void ChatServer::handleLogin(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    std::string username = msg.body["username"].get<std::string>();
-    std::string password = msg.body["password"].get<std::string>();
+    auto* body = static_cast<protocol::LoginBody*>(msg.body.get());
+    std::string username = body->username;
+    std::string password = body->password;
+    uint64_t seq = msg.header.seq;
 
-    authService_->asyncLogin(username, password, loop_, [this, conn, msg](bool success, const std::string& message) {
-        protocol::Message reply;
-        if (success) {
-            reply.header.type = protocol::MessageType::LOGIN_RESP;
-
-            uint64_t uid;
-            {
-                muduo::MutexLockGuard lock(mutex_);
-                uid = nextUid_++;
-                connections_[uid] = conn;
-                connToUid_[conn.get()] = uid;
-            }
-
-            chatService_->userOnline(uid);
-            reply.body["code"] = 0;
-            reply.body["uid"] = uid;
-        } else {
-            reply.header.type = protocol::MessageType::ERROR;
-            reply.body["code"] = -1;
-            reply.body["message"] = message;
+    uint64_t connUid = 0;
+    {
+        muduo::MutexLockGuard lock(mutex_);
+        auto it = connToUid_.find(conn.get());
+        if (it != connToUid_.end()) {
+            connUid = it->second;
         }
-        sendMessage(conn, reply);
-    });
+    }
+
+    if (connUid == 0) {
+        sendError(conn, "Connection not registered");
+        return;
+    }
+
+    service::LoginResult result = authService_->loginUser(username, password);  
+
+    if (result.success) {
+        LOG_INFO << "LOGIN OK: username=" << username << " realUid=" << result.uid
+                 << " tempUid=" << connUid << " connections_.size=" << connections_.size();
+        chatService_->userOnline(result.uid);
+        {
+            muduo::MutexLockGuard lock(mutex_);
+            connToUid_[conn.get()] = result.uid;
+            auto it = connections_.find(connUid);
+            if (it != connections_.end()) {
+                connections_.erase(it);
+            }
+            connections_[result.uid] = conn;
+        }
+        LOG_INFO << "After mapping: connections_.size=" << connections_.size();
+        sendMessage(conn, protocol::createLoginResp(seq, 0, result.token, result.uid));
+    } else {
+        sendError(conn, seq, result.code, result.message);
+    }
 }
 
 void ChatServer::handleChat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    uint64_t uid = 0;
-    {
-        muduo::MutexLockGuard lock(mutex_);
-        auto it = connToUid_.find(conn.get());
-        if (it != connToUid_.end()) {
-            uid = it->second;
-        }
-    }
-
+    uint64_t uid = authenticate(conn, msg);
     if (uid == 0) {
         sendError(conn, "Please login first");
         return;
     }
 
-    std::string roomId = msg.body["room_id"].get<std::string>();
-    std::string content = msg.body["content"].get<std::string>();
+    auto* body = static_cast<protocol::ChatBody*>(msg.body.get());
+    std::string roomId = body->room_id;
+    std::string content = body->content;
 
-    chatService_->sendChatMessage(uid, roomId, content);
+    // 业务层返回房间所有成员 uid，网络层负责找到对应连接并发出
+    auto members = chatService_->sendChatMessage(uid, roomId, content);
+
+    LOG_INFO << "handleChat: room=" << roomId << " has " << members.size()
+             << " members, broadcasting...";
+
+    broadcastToRoom(uid, roomId, members, content);
+
+    sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "Message sent"));
 }
 
 void ChatServer::handleJoinRoom(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    uint64_t uid = 0;
-    {
-        muduo::MutexLockGuard lock(mutex_);
-        auto it = connToUid_.find(conn.get());
-        if (it != connToUid_.end()) {
-            uid = it->second;
-        }
-    }
-
+    uint64_t uid = authenticate(conn, msg);
     if (uid == 0) {
         sendError(conn, "Please login first");
         return;
     }
 
-    std::string roomId = msg.body["room_id"].get<std::string>();
-    chatService_->joinRoom(uid, roomId);
+    auto* body = static_cast<protocol::JoinRoomBody*>(msg.body.get());
+    std::string roomId = body->room_id;
 
-    protocol::Message reply;
-    reply.header.type = protocol::MessageType::SYSTEM;
-    reply.body["message"] = "Joined room " + roomId;
-    sendMessage(conn, reply);
+    LOG_INFO << "JOIN_ROOM: uid=" << uid << " room=" << roomId;
+    if (chatService_->joinRoom(uid, roomId)) {
+        LOG_INFO << "User " << uid << " joined room " << roomId;
+        sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "Joined room " + roomId));
+    } else {
+        sendError(conn, "Failed to join room");
+    }
 }
 
 void ChatServer::handleLeaveRoom(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    uint64_t uid = 0;
-    {
-        muduo::MutexLockGuard lock(mutex_);
-        auto it = connToUid_.find(conn.get());
-        if (it != connToUid_.end()) {
-            uid = it->second;
-        }
-    }
-
+    uint64_t uid = authenticate(conn, msg);
     if (uid == 0) {
         sendError(conn, "Please login first");
         return;
     }
 
-    std::string roomId = msg.body["room_id"].get<std::string>();
-    chatService_->leaveRoom(uid, roomId);
+    auto* body = static_cast<protocol::LeaveRoomBody*>(msg.body.get());
+    std::string roomId = body->room_id;
 
-    protocol::Message reply;
-    reply.header.type = protocol::MessageType::SYSTEM;
-    reply.body["message"] = "Left room " + roomId;
-    sendMessage(conn, reply);
+    if (chatService_->leaveRoom(uid, roomId)) {
+        LOG_INFO << "User " << uid << " left room " << roomId;
+        sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "Left room " + roomId));
+    } else {
+        sendError(conn, "Failed to leave room");
+    }
+}
+
+void ChatServer::handlePrivateChat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
+    uint64_t uid = authenticate(conn, msg);
+    if (uid == 0) {
+        sendError(conn, "Please login first");
+        return;
+    }
+
+    auto* body = static_cast<protocol::PrivateChatBody*>(msg.body.get());
+    uint64_t targetUid = chatService_->sendPrivateMessage(uid, body->to_uid, body->content);
+
+    if (targetUid > 0) {
+        // 对方在线，找到连接直接发送
+        muduo::net::TcpConnectionPtr targetConn;
+        {
+            muduo::MutexLockGuard lock(mutex_);
+            auto it = connections_.find(targetUid);
+            if (it != connections_.end()) targetConn = it->second;
+        }
+
+        if (targetConn && targetConn->connected()) {
+            auto chatMsg = protocol::createPrivateChat(0, body->to_uid, body->content, "", uid);
+            sendMessage(targetConn, chatMsg);
+            sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "Private message sent"));
+            LOG_INFO << "Private chat delivered: " << uid << " → " << targetUid;
+        } else {
+            sendError(conn, "Target user disconnected");
+        }
+    } else {
+        sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "User offline, message stored"));
+    }
+}
+
+void ChatServer::handleAddFriend(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
+    uint64_t uid = authenticate(conn, msg);
+    if (uid == 0) {
+        sendError(conn, "Please login first");
+        return;
+    }
+
+    auto* body = static_cast<protocol::AddFriendBody*>(msg.body.get());
+    if (chatService_->addFriend(uid, body->friend_uid)) {
+        sendMessage(conn, protocol::createSystem(msg.header.seq, 0, "Friend added"));
+        LOG_INFO << "Friend added: " << uid << " ↔ " << body->friend_uid;
+    } else {
+        sendError(conn, "Failed to add friend");
+    }
 }
 
 void ChatServer::handleHeartbeat(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
-    protocol::Message reply;
-    reply.header.type = protocol::MessageType::HEARTBEAT;
-    sendMessage(conn, reply);
+    sendMessage(conn, protocol::createHeartbeat(msg.header.seq, ""));
 }
 
 void ChatServer::sendMessage(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
     std::string encoded = protocol::encode(msg);
-    muduo::net::Buffer buf;
-    uint32_t len = static_cast<uint32_t>(encoded.size());
-    buf.appendInt32(muduo::net::sockets::hostToNetwork32(len));
-    buf.append(encoded);
-    conn->send(&buf);
+    uint32_t len = htonl(static_cast<uint32_t>(encoded.size()));
+    conn->send(std::string(reinterpret_cast<const char*>(&len), 4) + encoded);
 }
 
 void ChatServer::sendError(const muduo::net::TcpConnectionPtr& conn, const std::string& errorMsg) {
-    protocol::Message msg;
-    msg.header.type = protocol::MessageType::ERROR;
-    msg.body["message"] = errorMsg;
-    sendMessage(conn, msg);
+    sendMessage(conn, protocol::createError(0, 1, errorMsg));
 }
 
+void ChatServer::sendError(const muduo::net::TcpConnectionPtr& conn, uint64_t seq, int code, const std::string& errorMsg) {
+    sendMessage(conn, protocol::createError(seq, code, errorMsg));
 }
+
+uint64_t ChatServer::authenticate(const muduo::net::TcpConnectionPtr& conn, const protocol::Message& msg) {
+    // 快速路径：当前连接已经做过认证
+    {
+        muduo::MutexLockGuard lock(mutex_);
+        auto it = connToUid_.find(conn.get());
+        if (it != connToUid_.end()) {
+            return it->second;
+        }
+    }
+
+    // 慢路径：通过 token 从 Redis 恢复会话（短连接 / nc 场景）
+    if (msg.header.token.empty()) {
+        return 0;
+    }
+
+    auto userOpt = userStore_->findByToken(msg.header.token);
+    if (!userOpt.has_value()) {
+        LOG_WARN << "Invalid token: " << msg.header.token.substr(0, 16) << "...";
+        return 0;
+    }
+
+    uint64_t uid = userOpt->id;
+    {
+        muduo::MutexLockGuard lock(mutex_);
+        connToUid_[conn.get()] = uid;
+        connections_[uid] = conn;
+    }
+
+    // 标记在线（可能在之前的连接上已经标记过，重复 SADD 无影响）
+    chatService_->userOnline(uid);
+
+    LOG_INFO << "Authenticated user " << uid << " via token on connection "
+             << conn->peerAddress().toIpPort();
+    return uid;
+}
+
+void ChatServer::broadcastToRoom(uint64_t senderUid, const std::string& roomId,
+                                  const std::vector<uint64_t>& members, const std::string& content) {
+    LOG_INFO << "broadcastToRoom: room=" << roomId << " members=" << members.size()
+             << " connections_.size=" << connections_.size();
+
+    for (uint64_t memberUid : members) {
+        muduo::net::TcpConnectionPtr memberConn;
+        {
+            muduo::MutexLockGuard lock(mutex_);
+            auto it = connections_.find(memberUid);
+            if (it != connections_.end()) {
+                memberConn = it->second;
+            }
+        }
+
+        if (memberConn && memberConn->connected()) {
+            LOG_INFO << "  -> Sending to user " << memberUid;
+            protocol::Message chatMsg = protocol::createChat(0, roomId, content, "", senderUid);
+            sendMessage(memberConn, chatMsg);
+        } else {
+            LOG_WARN << "  -> User " << memberUid << " NOT in connections_ (found="
+                     << (memberConn ? "yes" : "no")
+                     << " connected=" << (memberConn && memberConn->connected() ? "yes" : "no")
+                     << "), skipping";
+        }
+    }
+}
+
+} // namespace net

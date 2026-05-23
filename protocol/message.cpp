@@ -15,6 +15,8 @@ std::string messageTypeToString(MessageType type) {
         case MessageType::CHAT: return "CHAT";
         case MessageType::JOIN_ROOM: return "JOIN_ROOM";
         case MessageType::LEAVE_ROOM: return "LEAVE_ROOM";
+        case MessageType::PRIVATE_CHAT: return "PRIVATE_CHAT";
+        case MessageType::ADD_FRIEND: return "ADD_FRIEND";
         case MessageType::SYSTEM: return "SYSTEM";
         case MessageType::ERROR: return "ERROR";
         case MessageType::HEARTBEAT: return "HEARTBEAT";
@@ -29,6 +31,8 @@ MessageType stringToMessageType(const std::string& str) {
     if (str == "CHAT") return MessageType::CHAT;
     if (str == "JOIN_ROOM") return MessageType::JOIN_ROOM;
     if (str == "LEAVE_ROOM") return MessageType::LEAVE_ROOM;
+    if (str == "PRIVATE_CHAT") return MessageType::PRIVATE_CHAT;
+    if (str == "ADD_FRIEND") return MessageType::ADD_FRIEND;
     if (str == "SYSTEM") return MessageType::SYSTEM;
     if (str == "ERROR") return MessageType::ERROR;
     if (str == "HEARTBEAT") return MessageType::HEARTBEAT;
@@ -80,6 +84,18 @@ std::string encode(const Message& msg) {
         case MessageType::LEAVE_ROOM: {
             auto* body = static_cast<LeaveRoomBody*>(msg.body.get());
             j["body"]["room_id"] = body->room_id;
+            break;
+        }
+        case MessageType::PRIVATE_CHAT: {
+            auto* body = static_cast<PrivateChatBody*>(msg.body.get());
+            j["body"]["to_uid"] = body->to_uid;
+            j["body"]["content"] = body->content;
+            if (body->sender_uid) j["body"]["sender_uid"] = *body->sender_uid;
+            break;
+        }
+        case MessageType::ADD_FRIEND: {
+            auto* body = static_cast<AddFriendBody*>(msg.body.get());
+            j["body"]["friend_uid"] = body->friend_uid;
             break;
         }
         case MessageType::SYSTEM: {
@@ -158,6 +174,21 @@ std::optional<Message> decode(const std::string& json_str) {
             case MessageType::LEAVE_ROOM: {
                 auto body = std::make_unique<LeaveRoomBody>();
                 body->room_id = j["body"]["room_id"].get<std::string>();
+                msg.body = std::move(body);
+                break;
+            }
+            case MessageType::PRIVATE_CHAT: {
+                auto body = std::make_unique<PrivateChatBody>();
+                body->to_uid = j["body"]["to_uid"].get<uint64_t>();
+                body->content = j["body"]["content"].get<std::string>();
+                if (j["body"].contains("sender_uid"))
+                    body->sender_uid = j["body"]["sender_uid"].get<uint64_t>();
+                msg.body = std::move(body);
+                break;
+            }
+            case MessageType::ADD_FRIEND: {
+                auto body = std::make_unique<AddFriendBody>();
+                body->friend_uid = j["body"]["friend_uid"].get<uint64_t>();
                 msg.body = std::move(body);
                 break;
             }
@@ -289,6 +320,33 @@ Message createError(uint64_t seq, int code, const std::string& message) {
     auto body = std::make_unique<ErrorBody>();
     body->code = code;
     body->message = message;
+    msg.body = std::move(body);
+    return msg;
+}
+
+Message createPrivateChat(uint64_t seq, uint64_t to_uid, const std::string& content,
+                           const std::string& token, std::optional<uint64_t> sender_uid) {
+    Message msg;
+    msg.header.type = MessageType::PRIVATE_CHAT;
+    msg.header.seq = seq;
+    msg.header.timestamp = getCurrentTimestamp();
+    msg.header.token = token;
+    auto body = std::make_unique<PrivateChatBody>();
+    body->to_uid = to_uid;
+    body->content = content;
+    body->sender_uid = sender_uid;
+    msg.body = std::move(body);
+    return msg;
+}
+
+Message createAddFriend(uint64_t seq, uint64_t friend_uid, const std::string& token) {
+    Message msg;
+    msg.header.type = MessageType::ADD_FRIEND;
+    msg.header.seq = seq;
+    msg.header.timestamp = getCurrentTimestamp();
+    msg.header.token = token;
+    auto body = std::make_unique<AddFriendBody>();
+    body->friend_uid = friend_uid;
     msg.body = std::move(body);
     return msg;
 }

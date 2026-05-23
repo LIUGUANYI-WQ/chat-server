@@ -20,7 +20,7 @@ int main() {
     EventLoop loop;
 
     if (!MySQLConnectionPool::instance().init("localhost", "root", "123456",
-                                                "testdb", 3306, 8)) {
+                                                "test_db", 3306, 8)) {
         LOG_ERROR << "Failed to initialize MySQL connection pool";
         return -1;
     }
@@ -39,6 +39,7 @@ int main() {
         }
         MySQLConnectionPool::instance().releaseConnection(conn);
     }
+    
 
     if (!RedisManager::instance().init("127.0.0.1", 6379, 4)) {
         LOG_ERROR << "Failed to initialize Redis connection pool";

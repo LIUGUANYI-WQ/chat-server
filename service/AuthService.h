@@ -7,17 +7,16 @@
 
 namespace service {
 
-// 注册结果
 struct RegisterResult {
     bool success;
     int code;
     std::string message;
 };
 
-// 登录结果
 struct LoginResult {
     bool success;
     int code;
+    std::string message;   // 新增
     std::string token;
     uint64_t uid;
 };
