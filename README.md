@@ -351,6 +351,3 @@ mysql -u root -p -e "SHOW PROCESSLIST;"
   - store/MysqlPool.h/.cpp
   - service/ChatService.h/.cpp（完整的聊天业务逻辑）
   - 单节点聊天可跑通：多客户端登录 → 加入房间 → 互发消息
-
-  ---
-  请从迭代一开始。每次只做一个迭代，代码写完后等我确认再继续下一个。
